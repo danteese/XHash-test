@@ -218,11 +218,11 @@ export default {
       this.livenessReady = true;
     },
     video_frame_recived() {
-      console.log("Frame recieved");
+      // console.log("Frame recieved");
       this.send_frame();
     },
     frame_response(msg) {
-      console.log(msg);
+      // console.lgog(msg);
 
       if (msg.length > 0) {
         this.current_movement = msg[0];

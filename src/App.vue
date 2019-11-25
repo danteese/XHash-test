@@ -53,6 +53,7 @@
                 :loading="requestProcessing"
                 outlined
                 min-height="200px"
+                :disabled="ocr != null"
               >
                 <v-card-title>Identificación oficial: INE</v-card-title>
                 <v-card-text>
@@ -63,21 +64,34 @@
                   <v-layout>
                     <v-file-input
                       v-model="ine"
-                      @change="onFileChange"
+                      @change="onFileChange($event)"
                       accept="image/png, image/jpeg, image/bmp"
-                      placeholder="INE"
+                      placeholder="Imagen de documento"
                       label="Aquí va tu foto de INE"
                       prepend-icon="mdi-camera"
                     ></v-file-input>
                     <!-- TODO: Thiss button relies on a good server response -->
-                    <v-btn :disabled="false" color="success" v-on:click="uploadImage">Upload</v-btn>
+                    <v-btn :disabled="false" color="success" @click="uploadImage">Upload</v-btn>
                   </v-layout>
+                  <template v-if="ocr != null">
+                    <v-subheader>Los datos recibidos son:</v-subheader>
+                    <v-layout justify-center class="d-flex flex-column">
+                      <code outlined>{{ ocr }}</code>
+                    </v-layout>
+                  </template>
+                  <template v-if="error">
+                    <v-alert
+                      type="error"
+                    >No se pudo procesar tu información. Intenta con otra imagen.</v-alert>
+                  </template>
                 </v-card-text>
+                <v-card-actions>
+                  <v-progress-linear :active="requestProcessing" indeterminate color="blue"></v-progress-linear>
+                </v-card-actions>
               </v-card>
 
-              <v-btn color="primary" @click="turnOnVideo">Continue</v-btn>
+              <v-btn color="primary" v-if="ocr != null" @click="progress = 3;">Siguiente</v-btn>
 
-              <v-btn text>Cancel</v-btn>
             </v-stepper-content>
 
             <v-stepper-content step="3">
@@ -85,19 +99,22 @@
                 <v-card-title>Prueba de vida</v-card-title>
                 <v-card-text>
                   A continuación se le indicará que realice ciertas posiciones con su cabeza.
+                  <br>
+                  <br>
+                  <v-btn color="primary" @click="turnOnVideo()">Iniciar prueba</v-btn>
                   <br />
                   <br />
 
                   <v-layout justify-center>
-                    <video ref="video" id="video" :width="video_W" :height="video_H" autoplay></video>
+                    <video ref="video" id="video" :width="video_W" :height="video_H" autoplay alt="Tu videocámara"></video>
                   </v-layout>
                   <v-layout justify-center>
-                    <v-btn id="snap" class="ma-2" color="success" v-on:click="capture">
+                    <v-btn id="snap" class="ma-2" color="success" @click="capture()">
                       <v-icon left>sentiment_satisfied_alt</v-icon>Take photo
                     </v-btn>
                   </v-layout>
                   <v-layout>
-                    <v-btn color="primary" @click="progress = 4; turnOffVideo">Siguiente</v-btn>
+                    <v-btn color="primary" @click="progress = 4; turnOffVideo()">Siguiente</v-btn>
                   </v-layout>
                   <canvas
                     :display="captures.length > 0"
@@ -113,19 +130,15 @@
                   </ul>
                 </v-card-text>
               </v-card>
-               
             </v-stepper-content>
 
             <v-stepper-content step="4">
               <v-card class="mb-12" outlined color="white" min-height="300">
                 <v-card-title>Gracias por tu tiempo</v-card-title>
-                <v-card-text>
-                  Da click en finalizar para concluir la prueba.
-                </v-card-text>
+                <v-card-text>Da click en finalizar para concluir la prueba.</v-card-text>
               </v-card>
               <v-btn color="primary" @click="progress = 1">Finalizar</v-btn>
             </v-stepper-content>
-
           </v-stepper-items>
         </v-stepper>
       </v-container>
@@ -141,47 +154,56 @@ export default {
     return {
       ine: null,
       imageURL: "",
+      formData: null,
+      ocr: null,
       video: null,
       canvas: {},
       captures: [],
-      progress: 0, // Stepper starting point
+      progress: 3, // Stepper starting point
       requestProcessing: false,
       video_H: 400,
-      video_W: 400
+      video_W: 400,
+      error: false
     };
   },
   beforeCreate() {
     // TODO: Register an user and get the id
   },
-  mounted() {
-    // First stop everything
-    this.turnOffVideo();
+  mouted(){
+    this.turnOnVideo();
   },
   created() {
     console.log("Everything set up. By Dante Bazaldua");
   },
   methods: {
-    onFileChange() {
+    onFileChange(e) {
       let reader = new FileReader();
       reader.onload = () => {
-        this.imageURL = reader.result;
+        this.imageURL = reader.result.replace(
+          /^data:image\/(png|jpg|jpeg);base64,/,
+          ""
+        );
       };
       reader.readAsDataURL(this.ine);
     },
     async uploadImage() {
-      console.log(this.ine);
+      let formdata = new FormData();
+      formdata.append("document_file", this.ine);
       try {
         this.requestProcessing = true;
-        let user = await this.$http.post("ocr/identification", {
-          // customer_id: client_id,
-          // document_type: 1, // DOCS IN DASHBOARD -> TYPES
-          // do_ocr: true,
-          document_file: this.imageURL
+        let user = await this.$http.post("ocr/identification", formdata, {
+          headers: { "Content-Type": "multipart/form-data" }
         });
-        console.log(user);
+        if (user.data.result == false) {
+          this.error = true;
+        } else {
+          this.ocr = user.data.payload;
+          this.error = false;
+        }
       } catch (error) {
         console.log(error);
         console.log(error.response);
+        this.error = true;
       } finally {
         this.requestProcessing = false;
       }
@@ -196,10 +218,8 @@ export default {
       }
     },
     turnOffVideo() {
-      if (this.video != null) {
-        this.video.srcObject.getTracks()[0].stop();
-        this.video.srcObject = null;
-      }
+      this.video.srcObject.getTracks()[0].stop();
+      this.video.srcObject = null;
     },
     capture() {
       this.canvas = this.$refs.canvas;
@@ -221,5 +241,9 @@ export default {
 }
 #video {
   border-radius: 0.5;
+}
+code {
+  background: #000 !important;
+  color: #fff !important;
 }
 </style>

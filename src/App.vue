@@ -91,45 +91,61 @@
               </v-card>
 
               <v-btn color="primary" v-if="ocr != null" @click="progress = 3;">Siguiente</v-btn>
-
             </v-stepper-content>
 
             <v-stepper-content step="3">
               <v-card class="mb-12" outlined color="white" min-height="400">
                 <v-card-title>Prueba de vida</v-card-title>
                 <v-card-text>
-                  A continuación se le indicará que realice ciertas posiciones con su cabeza.
-                  <br>
-                  <br>
-                  <v-btn color="primary" @click="turnOnVideo()">Iniciar prueba</v-btn>
+                  A continuación se le indicará que realice ciertas posiciones con tu cabeza.
                   <br />
                   <br />
-
+                  <v-progress-linear :active="!livenessReady" indeterminate color="blue"></v-progress-linear>
+                  <v-btn
+                    v-if="livenessReady"
+                    color="primary"
+                    @click="turnOnVideo(); livenessOn = true; send_frame()"
+                  >
+                    <v-icon left>sentiment_satisfied_alt</v-icon>Iniciar prueba
+                  </v-btn>
+                  <br />
+                  <br />
                   <v-layout justify-center>
-                    <video ref="video" id="video" :width="video_W" :height="video_H" autoplay alt="Tu videocámara"></video>
+                    <video
+                      ref="video"
+                      id="video"
+                      :width="video_W"
+                      :height="video_H"
+                      autoplay
+                      alt="Tu videocámara"
+                    ></video>
+                    <v-overlay :absolute="true" :value="enough_movements >= 10">
+                      <h1>¡Listo!</h1>
+                    </v-overlay>
+                    <v-overlay :absolute="true" :value="socket_disconnect">
+                      <h2>Espera un momento estoy restableciendo la conexión.</h2>
+                    </v-overlay>
                   </v-layout>
-                  <v-layout justify-center>
-                    <v-btn id="snap" class="ma-2" color="success" @click="capture()">
-                      <v-icon left>sentiment_satisfied_alt</v-icon>Take photo
-                    </v-btn>
-                  </v-layout>
-                  <v-layout>
-                    <v-btn color="primary" @click="progress = 4; turnOffVideo()">Siguiente</v-btn>
-                  </v-layout>
-                  <canvas
-                    :display="captures.length > 0"
-                    ref="canvas"
-                    id="canvas"
-                    width="640"
-                    height="480"
-                  ></canvas>
-                  <ul>
+                  <template v-if="enough_movements > 0">
+                    <v-alert dense type="info">
+                      Tu movimiento actual es:
+                      <strong>{{current_movement}}</strong>
+                      . Necesitas otros {{ 10 - enough_movements }}.
+                    </v-alert>
+                  </template>
+                  <canvas ref="canvas" id="canvas" width="640" height="480" style="display:none;"></canvas>
+                  <!-- <ul>
                     <li v-for="(c,i) in captures" :key="i">
                       <img :src="c" height="50" />
                     </li>
-                  </ul>
+                  </ul>-->
                 </v-card-text>
               </v-card>
+              <v-btn
+                v-if="enough_movements >= 10"
+                color="primary"
+                @click="progress = 4; $socket.disconnect(true); turnOffVideo()"
+              >Siguiente</v-btn>
             </v-stepper-content>
 
             <v-stepper-content step="4">
@@ -147,8 +163,7 @@
 </template>
 
 <script>
-const client_id = 422;
-
+var localstream;
 export default {
   data() {
     return {
@@ -163,17 +178,61 @@ export default {
       requestProcessing: false,
       video_H: 400,
       video_W: 400,
-      error: false
+      error: false, // Response for server (OCR)
+      livenessReady: false,
+      livenessOn: false,
+      currentPhoto: null, // Frame
+      enough_movements: 0, // For this demo the amount of mov is 10
+      current_movement: null,
+      socket_disconnect: false // Flag to get when the socket is out
     };
   },
   beforeCreate() {
     // TODO: Register an user and get the id
   },
-  mouted(){
+  mouted() {
     this.turnOnVideo();
   },
   created() {
     console.log("Everything set up. By Dante Bazaldua");
+  },
+  sockets: {
+    connect() {
+      this.socket_disconnect = false;
+      console.log("Socket connected");
+      if (this.livenessOn) {
+        this.send_frame();
+      }
+    },
+    please_authorize() {
+      let key = this.$http.defaults.headers.common["authorization"];
+      this.$socket.emit("try_authorization", {
+        token: "1"
+      });
+    },
+    authorization_denied(error) {
+      console.log(error);
+    },
+    authorization_granted() {
+      console.log("Conexión exitosa.");
+      this.livenessReady = true;
+    },
+    video_frame_recived() {
+      console.log("Frame recieved");
+      this.send_frame();
+    },
+    frame_response(msg) {
+      console.log(msg);
+
+      if (msg.length > 0) {
+        this.current_movement = msg[0];
+        this.enough_movements += 1;
+      }
+    },
+    disconnect(err) {
+      console.log(err);
+      this.socket_disconnect = true;
+    }
   },
   methods: {
     onFileChange(e) {
@@ -186,6 +245,10 @@ export default {
       };
       reader.readAsDataURL(this.ine);
     },
+    /**
+     * OCR Identification for INE
+     * Uses multipart data
+     */
     async uploadImage() {
       let formdata = new FormData();
       formdata.append("document_file", this.ine);
@@ -208,25 +271,44 @@ export default {
         this.requestProcessing = false;
       }
     },
+    // Liveness
+    /**
+     * Start socket and start recording
+     */
     turnOnVideo() {
       this.progress = 3;
       this.video = this.$refs.video;
       if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
         navigator.mediaDevices.getUserMedia({ video: true }).then(stream => {
+          localstream = stream;
           this.video.srcObject = stream;
         });
       }
     },
     turnOffVideo() {
-      this.video.srcObject.getTracks()[0].stop();
-      this.video.srcObject = null;
+      localstream.getTracks()[0].stop();
+      this.video.srcObject = null
     },
+    /**
+     * Create image from video in canvas
+     */
     capture() {
       this.canvas = this.$refs.canvas;
       var context = this.canvas
         .getContext("2d")
         .drawImage(this.video, 0, 0, 640, 480);
-      this.captures.push(this.canvas.toDataURL("image/png"));
+      let currentPhoto = this.canvas.toDataURL("image/jpeg");
+      // this.captures.push(currentPhoto); // Not necessary
+      this.currentPhoto = currentPhoto;
+    },
+    /**
+     * Suggested function to consume the API
+     */
+    send_frame() {
+      this.capture();
+      this.$socket.emit("video_frame", {
+        data: this.currentPhoto
+      });
     }
   }
 };

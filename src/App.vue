@@ -174,7 +174,7 @@ export default {
       video: null,
       canvas: {},
       captures: [],
-      progress: 3, // Stepper starting point
+      progress: 0, // Stepper starting point
       requestProcessing: false,
       video_H: 400,
       video_W: 400,
